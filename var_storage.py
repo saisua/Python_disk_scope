@@ -44,7 +44,7 @@ added_vars = []
 locked_vars = set(['v'])
 locked_types = {"module", "function", "type"}
 rlocals = dict()
-remove_decorators = re.compile(r"@.*?\.(launch|store_var).*?\n")
+remove_decorators = re.compile(r"@.*?\.(launch|store_\w+).*?\n")
 tdict = dict
 tlist = list
 tset = set
@@ -287,8 +287,8 @@ def get_class_src(value: type) -> str:
     return '\n'.join(class_str)
         
 def store_gen(attr:typing.Union[type, object, str], value: typing.Any=None) -> typing.Any:
-    """Store a generator of attr into disk. Works for functions and classes
-    For functions and classes, it can also be used as a wrapper, that is
+    """Store a generator of attr into disk. Works only for functions.
+    It can also be used as a wrapper, that is
     @store_gen
     def my_func():...
     
@@ -296,13 +296,12 @@ def store_gen(attr:typing.Union[type, object, str], value: typing.Any=None) -> t
     so not only there is loss danger, but it is also slow, so do not use it on loops when possible
 
     Args:
-        attr (Union[type, typing.callable, str]): Either a function, a class or the name of
+        attr (Union[type, typing.callable, str]): Either a function, or the name of
             the variable to be stored in disk
-        value (Any): If attr is a string, the object to be stored in memory, be it a function,
-            a class or a pickleable object
+        value (Any): If attr is a string, the function to be stored in memory
             
     Returns:
-        Any: The data that has been stored in disk
+        Any: The result of calling the function with no arguments
     """
     global added_vars, rlocals
     
@@ -329,33 +328,14 @@ def store_gen(attr:typing.Union[type, object, str], value: typing.Any=None) -> t
             if(Var_storage.store_in_ssh):
                 Var_storage.ssh_connection.put(filepath, f"{Var_storage.ssh_path}{filepath}")
             
+        res = value()
         if(attr not in rlocals):
-            rlocals[attr] = value
-    elif(tname == "type"):
-        src = get_class_src(value)
-        
-        if(src):
-            filepath = f"{Var_storage.folder_name}/{attr}.gen"
-            with open(filepath, "w+") as f:
-                f.write(src)
-                
-            if(Var_storage.store_in_ssh):
-                Var_storage.ssh_connection.put(filepath, f"{Var_storage.ssh_path}{filepath}")
-            
-            if(attr not in rlocals):
-                rlocals[attr] = value
+            rlocals[attr] = res
             
     else:
-        filepath = f"{Var_storage.folder_name}/{attr}"
-        with open(filepath, "wb+") as f:
-            pkl.dump(value, f)
-            
-        if(Var_storage.store_in_ssh):
-            Var_storage.ssh_connection.put(filepath, f"{Var_storage.ssh_path}{filepath}")
-
-        rlocals[attr] = value 
+        raise ValueError("Store gen must be a function")
     
-    return value
+    return res
 
 def store_var(attr:typing.Union[type, object, str], value: typing.Any=None) -> typing.Any:
     """Store any variable into disk. Works for pickleable objects, functions and classes..
