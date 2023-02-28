@@ -1,3 +1,7 @@
+__author__ = "Ausias Prieto Roig"
+__credits__ = ["Ausias Prieto Roig"]
+__version__ = "1.0.0"
+
 # Python imports
 from logging import exception
 import pickle as pkl
@@ -116,19 +120,22 @@ def get_start(src: str) -> int:
         else: break
     return n
 
-def load_source(fname: str) -> typing.Any:
+def load_source(fname: str, *, extension: str='src') -> typing.Any:
     """ This allows to retrieve a source code from disk and evaluate it.
     Be aware that this is not sanitized, so please only load trustworthy sources
     
     Args:
         fname (src): The name of the file to be loaded and evaluated. The file loaded will be
             the one in "{folder_name}/{fname}.src"
+    Kwargs:
+        extension (src): The extension of the file to be loaded. Used to distinguish between
+            purely source functions and generators
             
     Returns:
         Any: The requested source code if found, None otherwise
     """
     global rlocals
-    function_name = f"{Var_storage.folder_name}/{fname}.src"
+    function_name = f"{Var_storage.folder_name}/{fname}.{extension}"
     if(os.path.exists(function_name)):
         with open(function_name, "r") as f:
             src = f.read()
@@ -181,6 +188,15 @@ def load_var(attr: str) -> typing.Any:
             raise NameError(f"name '{attr}' is not defined")
 
         rlocals[attr] = value 
+        return value
+    elif(os.path.exists(f"{attr_path}.gen")):
+        value = load_source(attr, extension='gen')
+
+        if(value is None):
+            raise NameError(f"name '{attr}' is not defined")
+
+        value = value()
+        rlocals[attr] = value
         return value
      
 
@@ -270,6 +286,76 @@ def get_class_src(value: type) -> str:
         return ''
     return '\n'.join(class_str)
         
+def store_gen(attr:typing.Union[type, object, str], value: typing.Any=None) -> typing.Any:
+    """Store a generator of attr into disk. Works for functions and classes
+    For functions and classes, it can also be used as a wrapper, that is
+    @store_gen
+    def my_func():...
+    
+    Please note that this does overwrite any previously stored variable,
+    so not only there is loss danger, but it is also slow, so do not use it on loops when possible
+
+    Args:
+        attr (Union[type, typing.callable, str]): Either a function, a class or the name of
+            the variable to be stored in disk
+        value (Any): If attr is a string, the object to be stored in memory, be it a function,
+            a class or a pickleable object
+            
+    Returns:
+        Any: The data that has been stored in disk
+    """
+    global added_vars, rlocals
+    
+    if(value is None):
+        value, attr = attr, attr.__name__
+    
+    if(len(added_vars)):
+        added_vars[-1].add(attr)
+
+    tname = type(value).__name__
+    if(tname == "function"):
+        try:
+            src = getsource(value)
+        except Exception:
+            print(f"Unable to store {attr}")
+            pass
+        else:
+            src = remove_decorators.sub('', re.sub(rf" {{{get_start(src)}}}( *)", "\g<1>", src))
+            
+            filepath = f"{Var_storage.folder_name}/{attr}.gen"
+            with open(filepath, "w+") as f:
+                f.write(src)
+                
+            if(Var_storage.store_in_ssh):
+                Var_storage.ssh_connection.put(filepath, f"{Var_storage.ssh_path}{filepath}")
+            
+        if(attr not in rlocals):
+            rlocals[attr] = value
+    elif(tname == "type"):
+        src = get_class_src(value)
+        
+        if(src):
+            filepath = f"{Var_storage.folder_name}/{attr}.gen"
+            with open(filepath, "w+") as f:
+                f.write(src)
+                
+            if(Var_storage.store_in_ssh):
+                Var_storage.ssh_connection.put(filepath, f"{Var_storage.ssh_path}{filepath}")
+            
+            if(attr not in rlocals):
+                rlocals[attr] = value
+            
+    else:
+        filepath = f"{Var_storage.folder_name}/{attr}"
+        with open(filepath, "wb+") as f:
+            pkl.dump(value, f)
+            
+        if(Var_storage.store_in_ssh):
+            Var_storage.ssh_connection.put(filepath, f"{Var_storage.ssh_path}{filepath}")
+
+        rlocals[attr] = value 
+    
+    return value
 
 def store_var(attr:typing.Union[type, object, str], value: typing.Any=None) -> typing.Any:
     """Store any variable into disk. Works for pickleable objects, functions and classes..
@@ -446,7 +532,7 @@ launch_file_start = lambda :[
     "__spec.loader.exec_module(__var)",
     f"{Var_storage.var_name} = __var.Var_storage(\"{Var_storage.var_name}\", locals(), folder_name=\"{Var_storage.folder_name}\")"
 ]
-def launch(function: object) -> None:
+def launch(function: object, *, compiled: bool=True) -> None:
     """Launch a given function as a separate python process in the current machine. 
     It also compiles it into cython, since it is meant for heavy processing.
     This locks current thread
@@ -483,8 +569,9 @@ def launch(function: object) -> None:
 
         with open(f"{Var_storage.folder_name}/_tmp_launch.py", "w+") as f:
             f.write(src)
-
-        os.system(f"{Var_storage.python_path} -m cython {Var_storage.folder_name}/_tmp_launch.py -3 --cplus -X boundscheck=False -X initializedcheck=False -X cdivision=True -X infer_types=True")
+        
+        if(compiled):
+            os.system(f"{Var_storage.python_path} -m cython {Var_storage.folder_name}/_tmp_launch.py -3 --cplus -X boundscheck=False -X initializedcheck=False -X cdivision=True -X infer_types=True")
 
         os.system(f"{Var_storage.python_path} {Var_storage.folder_name}/_run_launch.py")
         
@@ -496,7 +583,7 @@ ssh_launch_file_start = lambda :[
     "__spec.loader.exec_module(__var)",
     f"{Var_storage.var_name} = __var.Var_storage(\"{Var_storage.var_name}\", locals(), folder_name=\"{Var_storage.ssh_path}{Var_storage.folder_name}\")"
 ]
-def launch_ssh(function: object) -> None:
+def launch_ssh(function: object, *, compiled: bool=True) -> None:
     """Launch a given function as a separate python process in the set up ssh machine. 
     It also compiles it into cython, since it is meant for heavy processing.
     This locks current thread
@@ -542,7 +629,8 @@ def launch_ssh(function: object) -> None:
 
         Var_storage.ssh_connection.put(filename, f"{Var_storage.ssh_path}{filename}")
             
-        Var_storage.ssh_connection.run(f"{Var_storage.python_ssh_path} -m cython {Var_storage.ssh_path}{Var_storage.folder_name}/_tmp_launch.py -3 --cplus -X boundscheck=False -X initializedcheck=False -X cdivision=True -X infer_types=True")
+        if(compiled):
+            Var_storage.ssh_connection.run(f"{Var_storage.python_ssh_path} -m cython {Var_storage.ssh_path}{Var_storage.folder_name}/_tmp_launch.py -3 --cplus -X boundscheck=False -X initializedcheck=False -X cdivision=True -X infer_types=True")
 
         Var_storage.ssh_connection.run(f"{Var_storage.python_ssh_path} {Var_storage.ssh_path}{Var_storage.folder_name}/_run_launch.py")
         
@@ -757,6 +845,7 @@ external = [
     launch_ssh,
     store_var,
     load_var,
+    store_gen,
     solve_vars,
     ssh_upload_all,
     ssh_download_all,
@@ -981,4 +1070,7 @@ class Var_storage:
         Returns:
             bool: If the variable name is found in the designed folder
         """
-        return attr in rlocals or os.path.exists(f"{Var_storage.folder_name}/{attr}") or os.path.exists(f"{Var_storage.folder_name}/{attr}.src")
+        return attr in rlocals or \
+            os.path.exists(f"{Var_storage.folder_name}/{attr}") or \
+            os.path.exists(f"{Var_storage.folder_name}/{attr}.src") or \
+            os.path.exists(f"{Var_storage.folder_name}/{attr}.gen")
