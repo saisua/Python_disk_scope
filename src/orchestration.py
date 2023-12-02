@@ -37,6 +37,9 @@ class Var_orchestrator:
 
 		self.store_var('$orchestrator', chosen_orchestrator)
 
+	def task(self, *args, **kwargs):
+		return self._orchestrator_.task(*args, **kwargs)
+
 	def get_orchestrator(self):
 		return self._orchestrator_
 	
