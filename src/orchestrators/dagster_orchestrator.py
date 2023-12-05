@@ -11,6 +11,8 @@ import re
 
 import subprocess
 
+from dagster import Output, DynamicOutput
+
 from ..regex import decorators_re
 
 from ..defaults import DEFAULT_ORCHESTRATION_PROJECT_FOLDER
@@ -19,7 +21,10 @@ from ..compatibility import *
 
 DEFAULT_ORCHESTRATION_FOLDER_PREFIX: Final[str] = 'dagster_'
 DAGSTER_ASSET_FLAG: Final[str] = '@asset'
-DEFAULT_LAUNCH_ORCHESTRATOR: Final[bool] = True
+DAGSTER_OP_FLAG: Final[str] = '@op'
+DAGSTER_JOB_FLAG: Final[str] = '@job'
+DAGSTER_GRAPH_FLAG: Final[str] = '@graph_asset'
+DEFAULT_LAUNCH_ORCHESTRATOR: Final[bool] = False
 
 def copy_replace_file(file, path, *, data):
 	file_src: str
@@ -38,14 +43,24 @@ class Dagster:
 
 	_project_folder_name_: str
 	_project_folder_: str
+	_assets_folder_name_: str
 	_assets_folder_: str
 
 	_dagster_subprocess_: object
 
 	_file_start_: str
+
+	_ASSET_FLAG_: Final[str] = DAGSTER_ASSET_FLAG
+	_OP_FLAG_: Final[str] = DAGSTER_OP_FLAG
+	_JOB_FLAG_: Final[str] = DAGSTER_JOB_FLAG
+	_GRAPH_FLAG_: Final[str] = DAGSTER_GRAPH_FLAG
+
+	_decorators_: Pattern[str] = re.compile(fr"@.*?\.(asset|job|op|graph).*?\n")
+
 		
 	def __init__(self, 
-			     parent: object, 
+			     parent: object,
+				 orchestration_folder: str=DEFAULT_ORCHESTRATION_FOLDER_PREFIX+DEFAULT_ORCHESTRATION_PROJECT_FOLDER,
 				 orchestration_project: str=DEFAULT_ORCHESTRATION_FOLDER_PREFIX+DEFAULT_ORCHESTRATION_PROJECT_FOLDER,
 				 launch_orchestrator: bool=DEFAULT_LAUNCH_ORCHESTRATOR,
 				 **kwargs
@@ -53,9 +68,11 @@ class Dagster:
 		self._parent_ = parent
 
 		self._folder_name_ = self._parent_._folder_name_
-		self._project_folder_name_ = orchestration_project
+		self._project_folder_name_ = orchestration_folder
 		self._project_folder_ = f"{self._folder_name_}/{self._project_folder_name_}"
-		self._assets_folder_ = f"{self._project_folder_}/{self._project_folder_name_}"
+
+		self._assets_folder_name_ = orchestration_project
+		self._assets_folder_ = f"{self._project_folder_}/{self._assets_folder_name_}"
 
 		dagster_files_folder = os.path.join(
 			'/',
@@ -66,7 +83,7 @@ class Dagster:
 		with open(f"{dagster_files_folder}/file_start.py", 'r') as f:
 			self._file_start_ = f.read()
 
-		if(not orchestration_project in self._parent_):
+		if(not orchestration_folder in self._parent_):
 			filesystem = self._parent_.filesystem
 
 			filesystem.mkdir(self._project_folder_)
@@ -95,45 +112,149 @@ class Dagster:
 			)
 
 		if(launch_orchestrator):
-			self._dagster_subprocess_ = subprocess.Popen(
-				'dagster dev', 
-				shell=True,
-				cwd=self._project_folder_,
-			)
+			self.launch_orchestrator()
+		else:
+			print(f"[i] Orchestrator not launched. To launch, call {self._parent_._var_name_}.launch_orchestrator()")
+	
+	def launch_orchestrator(self):
+		self._dagster_subprocess_ = subprocess.Popen(
+			'dagster dev', 
+			shell=True,
+			cwd=self._project_folder_,
+		)
 
-	def task(self, fn: Callable=None, **kwargs) -> None:
-		if(fn is None):
-			return partial(self.task, **kwargs)
+	def asset(self, *args, **kwargs):
+		return self._store_asset(*args, tag=self._ASSET_FLAG_, **kwargs)
+	
+	def op(self, *args, **kwargs):
+		return self._store_asset(*args, tag=self._OP_FLAG_, **kwargs)
+
+	def job(self, *args, **kwargs):
+		return self._store_asset(*args, tag=self._JOB_FLAG_, **kwargs)
+
+	def graph(self, *args, **kwargs):
+		return self._store_asset(*args, tag=self._GRAPH_FLAG_, **kwargs)
+	
+
+	def _asset_from_src(self, *args, **kwargs):
+		return self._store_asset_src(*args, tag=self._ASSET_FLAG_, **kwargs)
+	
+	def _op_from_src(self, *args, **kwargs):
+		return self._store_asset_src(*args, tag=self._OP_FLAG_, **kwargs)
+
+	def _job_from_src(self, *args, **kwargs):
+		return self._store_asset_src(*args, tag=self._JOB_FLAG_, **kwargs)
+
+	def _graph_from_src(self, *args, **kwargs):
+		return self._store_asset_src(*args, tag=self._GRAPH_FLAG_, **kwargs)
+	
+	def _update_function_outputs(self, src: str) -> str:
+		try:
+			output_typing_match = next(
+				re.finditer(
+					r"\)\s*\-\>\s*(\{\s*(.*?)\s*\})\s*\:", 
+					src
+			)	)
+		except StopIteration:
+			return src
+
+		if(output_typing_match is None):
+			return src
 		
+		types = list(
+			map(
+				str.strip, 
+				filter(
+					None, 
+					re.split(
+						r"(,|^)\s*[\'\"].*?[\'\"]\s*\:", 
+						output_typing_match.group(2)
+		)	)	)	)
+
+		if(not len(types)):
+			return src
+		
+		final_type: str
+		if(len(types) == 1):
+			final_type = types[0]
+		else:
+			final_type = f"Tuple[{''.join(types)}]"
+
+		start, end = output_typing_match.span(1)
+		return src[:start] + final_type + src[end:]
+
+	def _extract_dagster_outputs(self, fn) -> str:
+		if(not hasattr(fn, '__annotations__')):
+			print('no fn annotations')
+			return {}
+
+		outputs = fn.__annotations__
+
+		if('return' not in outputs):
+			print('no fn annotations return')
+			print(outputs)
+			return {}
+
+		res_outputs = outputs['return']
+		
+		if(type(res_outputs) is not dict):
+			print(f'fn annotations return is of type {type(res_outputs)}')
+			return {}
+
+		outs: List[str] = []
+		output_name: str
+		output_type: type
+		for output_name, output_type in res_outputs.items():
+			outs.append(f"{repr(output_name)}:Out({output_type.__qualname__})")
+
+		outs_str: str =  '{' + ','.join(outs) + '}'
+
+		return outs_str
+
+	def _store_asset(self, fn: Callable=None, *, tag: str, imports: List[str]=[], **kwargs) -> None:
+		if(fn is None):
+			return partial(self._store_asset, tag=tag, imports=imports, **kwargs)
+
+		if('out' not in kwargs):
+			kwargs['out'] = self._extract_dagster_outputs(fn)
+
 		# Deserialize function
 		# Store it in project with the asset tag
 		try:
 			src = getsource(fn)
-		except Exception:
-			print(f"Unable to store {fn}")
+		except Exception as e:
+			print(f"Unable to get source code for function {fn}.\nReason: {e}")
 			return
+	
+		self._store_asset_src(src, fn.__name__, tag=tag, imports=imports, **kwargs)
+		return fn
 
-		src = decorators_re.sub('', re.sub(rf" {{{self._parent_.get_start(src)}}}( *)", "\g<1>", src))
+	def _store_asset_src(self, src: str, fn_name: str, *, tag: str, imports: List[str]=[], **kwargs) -> None:
+		src = self._decorators_.sub(
+			'',
+			decorators_re.sub(
+				'', 
+				re.sub(
+					rf" {{{self._parent_.get_start(src)}}}( *)", 
+					"\g<1>", 
+					src
+		)	)	)
  
 		ext_load_src = f''
-		deps = ''
 		for _, ext_ref in re.findall(f'(\W|^){self._parent_._var_name_}\.(\w+)', src):
 			if(os.path.exists(f"{self._assets_folder_.rstrip('/')}/{ext_ref}.py")):
-				ext_load_src += f"{ext_ref} = AssetDep(SourceAsset(key=AssetKey(\"{ext_ref}\")))\n"
-				deps += f"{ext_ref}, "
+				ext_load_src += f"from {self._assets_folder_name_}.{ext_ref} import {ext_ref}\n"
 		
 		src = re.sub(f'(\W|^){self._parent_._var_name_}\.(\w+)', '\g<1>\g<2>', src)
 
+		flag_args: str
 		if(len(kwargs)):
-			if(len(deps) and 'deps' in kwargs):
-				raise NotImplementedError()
-			flag_args = '(' + ', '.join((f'{k}={repr(v)}' for k, v in kwargs.items())) + ')'
+			flag_args = '(' + ', '.join((f'{k}={v}' for k, v in kwargs.items())) + ')'
 		else:
-			flag_args = f'(deps=[{deps}])'
+			flag_args = ''
 		
-		src = f"{self._file_start_}\n\n{ext_load_src}\n\n{DAGSTER_ASSET_FLAG}{flag_args}\n{src}"
+		chained_imports = '\n'.join(imports)
+		src = f"{self._file_start_}\n{chained_imports}\n\n{ext_load_src}\n\n{tag}{flag_args}\n{src}"
 
-		with open(f"{self._assets_folder_.rstrip('/')}/{fn.__name__}.py", 'w+') as f:
+		with open(f"{self._assets_folder_.rstrip('/')}/{fn_name}.py", 'w+') as f:
 			f.write(src)
-
-		return fn

@@ -1,5 +1,5 @@
 from typing import *
-from dagster import Definitions, load_assets_from_modules
+from dagster import Definitions, load_assets_from_modules, JobDefinition
 
 import os
 
@@ -29,11 +29,27 @@ def dynamic_import_from_src(star_import: bool = False):
 		)
 	return modules
 
+def load_from_modules(modules, types):
+	jobs = []
+	for module in modules:
+		for att_name in dir(module):
+			att = getattr(module, att_name)
 
+			if(isinstance(att, types)):
+				jobs.append(att)
+
+	return jobs
+
+all_modules = dynamic_import_from_src()
 all_assets = load_assets_from_modules(
-	dynamic_import_from_src()
+ 	all_modules
+)
+all_jobs = load_from_modules(
+	all_modules,
+	JobDefinition
 )
 
 defs = Definitions(
 	assets=all_assets,
+	jobs=all_jobs
 )

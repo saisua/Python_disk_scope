@@ -37,8 +37,49 @@ class Var_orchestrator:
 
 		self.store_var('$orchestrator', chosen_orchestrator)
 
-	def task(self, *args, **kwargs):
-		return self._orchestrator_.task(*args, **kwargs)
+
+	def launch_orchestrator(self):
+		self._orchestrator_.launch_orchestrator()
+
+	def asset(self, *args, **kwargs):
+		return self._orchestrator_.asset(*args, **kwargs)
+	
+	def graph(self, *args, **kwargs):
+		return self._orchestrator_.graph(*args, **kwargs)
+	
+	def op(self, *args, **kwargs):
+		return self._orchestrator_.op(*args, **kwargs)
+	
+	def job(self, *args, **kwargs):
+		return self._orchestrator_.job(*args, **kwargs)
+	
+	def _load_function(self, src: str, step_fn_name: str=None, **kwargs) -> Tuple[str, str, Dict[str, Any]]:
+		fn_name, fn_src = self.version_controller._load_function_src(src, step_fn_name)
+
+		if('out' not in kwargs):
+			kwargs['out'] = self._orchestrator_._extract_dagster_outputs(
+				self.version_controller._instantiate_function_src(fn_src, fn_name)
+			)
+			fn_src = self._orchestrator_._update_function_outputs(fn_src)
+
+		return fn_src, fn_name, kwargs
+
+	def load_asset(self, src: str, *, step_fn_name: str=None, **kwargs):
+		fn_src, fn_name, kwargs = self._load_function(src, step_fn_name, **kwargs)
+		return self._orchestrator_._asset_from_src(fn_src, fn_name, **kwargs)
+
+	def load_graph(self, src: str, *, step_fn_name: str=None, **kwargs):
+		fn_src, fn_name, kwargs = self._load_function(src, step_fn_name, **kwargs)
+		return self._orchestrator_._graph_from_src(fn_src, fn_name, **kwargs)
+
+	def load_op(self, src: str, *, step_fn_name: str=None, **kwargs):
+		fn_src, fn_name, kwargs = self._load_function(src, step_fn_name, **kwargs)
+		return self._orchestrator_._op_from_src(fn_src, fn_name, **kwargs)
+
+	def load_job(self, src: str, *, step_fn_name: str=None, **kwargs):
+		fn_src, fn_name, kwargs = self._load_function(src, step_fn_name, **kwargs)
+		return self._orchestrator_._job_from_src(fn_src, fn_name, **kwargs)
+
 
 	def get_orchestrator(self):
 		return self._orchestrator_

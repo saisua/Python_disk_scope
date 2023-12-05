@@ -213,7 +213,7 @@ class Git:
 		return value
 
 	def add_new_step(self, 
-				     stored_varname: str, 
+					 stored_varname: str, 
 					 step_name: str, 
 					 step_n: int=None, 
 					 *, 
@@ -233,7 +233,25 @@ class Git:
 		self._repo_.index.add(steps_varname)
 		self._repo_.index.commit(step_name)
 
+	def _instantiate_function_src(self, fn_src: str, step_fn_name: str, src='', **kwargs):
+		rlocals = self._parent_._rlocals_.copy()
+		exec(
+			fn_src,
+			rlocals
+		)
+
+		step_fn = rlocals.get(step_fn_name)
+
+		if(not (step_fn and callable(step_fn))):
+			raise ValueError(f"Evaluated \"{src}.{step_fn_name}\" is not callable")
+		
+		return step_fn
+
 	def _load_function(self, src: str, step_fn_name: str=None, **kwargs) -> Callable:
+		step_fn_name, fn_src = self._load_function_src(src, step_fn_name, **kwargs)
+		return self._instantiate_function_src(fn_src, step_fn_name, src, **kwargs)
+
+	def _load_function_src(self, src: str, step_fn_name: str=None, **kwargs) -> Tuple[str, str]:
 		src = re.sub(r'[\\/]+', '.', src)
 		src = src[:-3] if src.endswith('.py') else src
 
@@ -252,24 +270,14 @@ class Git:
 		if(step_fn_name is None):
 			step_fn_name = fname
 		if(not hasattr(pkg, step_fn_name)):
-			raise ValueError(f"\"{src}\" has no \"{step_fn_name}\"")
+			raise ValueError(f"\"{src}\" has no \"{step_fn_name}\" file")
 		
 		step_pkg_fn = getattr(pkg, step_fn_name)
 
 		if(not (step_pkg_fn and callable(step_pkg_fn))):
 			raise ValueError(f"\"{src}.{step_fn_name}\" is not callable")
 		
-		exec(
-			getsource(step_pkg_fn),
-			self._parent_._rlocals_
-		)
-
-		step_fn = self._parent_._rlocals_.get(step_fn_name)
-
-		if(not (step_fn and callable(step_fn))):
-			raise ValueError(f"Evaluated \"{src}.{step_fn_name}\" is not callable")
-		
-		return step_fn
+		return step_fn_name, getsource(step_pkg_fn)
 
 	def _reset_step_to_commit(self, commit: Commit, varname: str):
 		self._git_.reset(commit.hexsha, '--', varname)
