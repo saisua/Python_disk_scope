@@ -53,14 +53,13 @@ class Var_orchestrator:
 	def job(self, *args, **kwargs):
 		return self._orchestrator_.job(*args, **kwargs)
 	
-	def _load_function(self, src: str, step_fn_name: str=None, **kwargs) -> Tuple[str, str, Dict[str, Any]]:
+	def _load_function(self, src: str, step_fn_name: str=None, update_outs: bool=False, **kwargs) -> Tuple[str, str, Dict[str, Any]]:
 		fn_name, fn_src = self.version_controller._load_function_src(src, step_fn_name)
 
-		if('out' not in kwargs):
-			kwargs['out'] = self._orchestrator_._extract_dagster_outputs(
-				self.version_controller._instantiate_function_src(fn_src, fn_name)
-			)
-			fn_src = self._orchestrator_._update_function_outputs(fn_src)
+		if(update_outs and 'out' not in kwargs):
+			fn_src, outs = self._orchestrator_._update_function_outputs(fn_src)
+			if(outs is not None):
+				kwargs['out'] = outs
 
 		return fn_src, fn_name, kwargs
 
@@ -73,7 +72,7 @@ class Var_orchestrator:
 		return self._orchestrator_._graph_from_src(fn_src, fn_name, **kwargs)
 
 	def load_op(self, src: str, *, step_fn_name: str=None, **kwargs):
-		fn_src, fn_name, kwargs = self._load_function(src, step_fn_name, **kwargs)
+		fn_src, fn_name, kwargs = self._load_function(src, step_fn_name, update_outs=True, **kwargs)
 		return self._orchestrator_._op_from_src(fn_src, fn_name, **kwargs)
 
 	def load_job(self, src: str, *, step_fn_name: str=None, **kwargs):

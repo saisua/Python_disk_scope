@@ -55,7 +55,7 @@ class Dagster:
 	_JOB_FLAG_: Final[str] = DAGSTER_JOB_FLAG
 	_GRAPH_FLAG_: Final[str] = DAGSTER_GRAPH_FLAG
 
-	_decorators_: Pattern[str] = re.compile(fr"@.*?\.(asset|job|op|graph).*?\n")
+	_decorators_: Pattern[str] = re.compile(r"@.*?\.(asset|job|op|graph)[^\n]*\n")
 
 		
 	def __init__(self, 
@@ -83,10 +83,14 @@ class Dagster:
 		with open(f"{dagster_files_folder}/file_start.py", 'r') as f:
 			self._file_start_ = f.read()
 
-		if(not orchestration_folder in self._parent_):
+		if(orchestration_folder not in self._parent_):
 			filesystem = self._parent_.filesystem
 
 			filesystem.mkdir(self._project_folder_)
+		
+		if(self._assets_folder_ not in self._parent_):
+			filesystem = self._parent_.filesystem
+
 			filesystem.mkdir(self._assets_folder_)
 
 			copy_replace_file(
@@ -148,7 +152,7 @@ class Dagster:
 	def _graph_from_src(self, *args, **kwargs):
 		return self._store_asset_src(*args, tag=self._GRAPH_FLAG_, **kwargs)
 	
-	def _update_function_outputs(self, src: str) -> str:
+	def _update_function_outputs(self, src: str) -> Tuple[str, Optional[str]]:
 		try:
 			output_typing_match = next(
 				re.finditer(
@@ -156,11 +160,19 @@ class Dagster:
 					src
 			)	)
 		except StopIteration:
-			return src
+			return src, None
 
 		if(output_typing_match is None):
-			return src
+			return src, None
 		
+		out_names = [
+			f[1]
+			for f in re.findall(
+				r"(,|^)\s*[\'\"](.*?)[\'\"]\s*\:", 
+				output_typing_match.group(2)
+			)
+		]
+
 		types = list(
 			map(
 				str.strip, 
@@ -172,7 +184,14 @@ class Dagster:
 		)	)	)	)
 
 		if(not len(types)):
-			return src
+			return src, None
+
+		
+		outs: List[str] = []
+		output_name: str
+		output_type: type
+		for output_name, output_type in zip(out_names, types[::2]):
+			outs.append(f"{repr(output_name)}:Out({output_type})")
 		
 		final_type: str
 		if(len(types) == 1):
@@ -181,37 +200,9 @@ class Dagster:
 			final_type = f"Tuple[{''.join(types)}]"
 
 		start, end = output_typing_match.span(1)
-		return src[:start] + final_type + src[end:]
+		return src[:start] + final_type + src[end:], '{' + ','.join(outs) + '}'
 
-	def _extract_dagster_outputs(self, fn) -> str:
-		if(not hasattr(fn, '__annotations__')):
-			print('no fn annotations')
-			return {}
-
-		outputs = fn.__annotations__
-
-		if('return' not in outputs):
-			print('no fn annotations return')
-			print(outputs)
-			return {}
-
-		res_outputs = outputs['return']
-		
-		if(type(res_outputs) is not dict):
-			print(f'fn annotations return is of type {type(res_outputs)}')
-			return {}
-
-		outs: List[str] = []
-		output_name: str
-		output_type: type
-		for output_name, output_type in res_outputs.items():
-			outs.append(f"{repr(output_name)}:Out({output_type.__qualname__})")
-
-		outs_str: str =  '{' + ','.join(outs) + '}'
-
-		return outs_str
-
-	def _store_asset(self, fn: Callable=None, *, tag: str, imports: List[str]=[], **kwargs) -> None:
+	def _store_asset(self, fn: Callable=None, *, tag: str, imports: List[str]=[], **kwargs) -> Callable:
 		if(fn is None):
 			return partial(self._store_asset, tag=tag, imports=imports, **kwargs)
 
@@ -240,7 +231,7 @@ class Dagster:
 					src
 		)	)	)
  
-		ext_load_src = f''
+		ext_load_src = ''
 		for _, ext_ref in re.findall(f'(\W|^){self._parent_._var_name_}\.(\w+)', src):
 			if(os.path.exists(f"{self._assets_folder_.rstrip('/')}/{ext_ref}.py")):
 				ext_load_src += f"from {self._assets_folder_name_}.{ext_ref} import {ext_ref}\n"
