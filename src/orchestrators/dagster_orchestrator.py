@@ -83,12 +83,12 @@ class Dagster:
 		with open(f"{dagster_files_folder}/file_start.py", 'r') as f:
 			self._file_start_ = f.read()
 
-		if(orchestration_folder not in self._parent_):
+		if(self._project_folder_ not in self._parent_.filesystem):
 			filesystem = self._parent_.filesystem
 
 			filesystem.mkdir(self._project_folder_)
 		
-		if(self._assets_folder_ not in self._parent_):
+		if(self._assets_folder_ not in self._parent_.filesystem):
 			filesystem = self._parent_.filesystem
 
 			filesystem.mkdir(self._assets_folder_)
