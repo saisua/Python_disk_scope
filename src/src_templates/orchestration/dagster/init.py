@@ -1,5 +1,12 @@
 from typing import *
-from dagster import Definitions, load_assets_from_modules, JobDefinition
+from dagster import (
+	load_assets_from_modules, 
+	Definitions, 
+	JobDefinition,
+	AssetsDefinition,
+	AssetChecksDefinition,
+	FilesystemIOManager,
+)
 
 import os
 
@@ -14,11 +21,11 @@ def get_py_files():
 	py_files = [] 
 	for root, dirs, files in os.walk(os.path.join(*os.path.split(__file__)[:-1])):
 		for file in files:
-			if file != '__init__.py' and file.endswith(".py"):
+			if file.endswith(".py") and file != '__init__.py':
 				py_files.append(os.path.join(root, file))
 	return py_files
 
-def dynamic_import_from_src(star_import: bool = False):
+def dynamic_import_from_src():
 	my_py_files = get_py_files()
 	
 	modules = []
@@ -29,27 +36,36 @@ def dynamic_import_from_src(star_import: bool = False):
 		)
 	return modules
 
-def load_from_modules(modules, types):
-	jobs = []
+def load_from_modules(modules, cls):
+	jobs = {}
 	for module in modules:
 		for att_name in dir(module):
+			if(att_name in jobs):
+				continue
+
 			att = getattr(module, att_name)
 
-			if(isinstance(att, types)):
-				jobs.append(att)
+			if(isinstance(att, cls)):
+				jobs[att_name] = att
 
-	return jobs
+	return list(jobs.values())
 
 all_modules = dynamic_import_from_src()
-all_assets = load_assets_from_modules(
- 	all_modules
+all_assets = load_from_modules(
+ 	all_modules,
+	AssetsDefinition
 )
 all_jobs = load_from_modules(
 	all_modules,
 	JobDefinition
 )
+all_asset_checks = load_from_modules(
+	all_modules,
+	AssetChecksDefinition
+)
 
 defs = Definitions(
 	assets=all_assets,
-	jobs=all_jobs
+	jobs=all_jobs,
+	asset_checks=all_asset_checks,
 )

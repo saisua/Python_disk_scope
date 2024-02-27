@@ -1,0 +1,16 @@
+telemetry:
+  enabled: false
+
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+
+storage:
+  sqlite:
+    base_dir: ./.storage
+
+local_artifact_storage:
+  module: dagster.core.storage.root
+  class: LocalArtifactStorage
+  config:
+    base_dir: ./.artifacts
